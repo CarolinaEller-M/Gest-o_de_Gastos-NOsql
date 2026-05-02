@@ -1,228 +1,412 @@
 """
-main.py — Demonstração completa do sistema financeiro
-Rode com: python main.py
+main.py — Arquivo principal / demonstração do sistema financeiro
+Conecta ao MongoDB, executa CRUD, operadores avançados e relatórios.
 """
 
+import sys
 from datetime import datetime
-from src.db import conectar, desconectar
-from src.usuarios import (
-    inserir_usuario, buscar_usuario_por_email,
-    adicionar_meta, remover_meta,
+from bson import ObjectId
+
+from conexao import conectar, fechar_conexao
+from categorias import inserir_categorias_padrao, buscar_todas_categorias
+from usuarios import (
+    inserir_usuario, buscar_usuario_por_id, buscar_todos_usuarios,
+    adicionar_meta_mensal, remover_meta_mensal, atualizar_email_usuario,
+    deletar_usuario,
 )
-from src.contas import inserir_conta, buscar_contas_por_usuario
-from src.transacoes import (
-    inserir_transacao, buscar_transacoes_por_mes, deletar_transacao,
+from contas import (
+    inserir_conta, buscar_contas_por_usuario, buscar_conta_por_id,
+    atualizar_saldo_conta, deletar_conta,
 )
-from src.categorias import inserir_categoria, listar_categorias
-from src.relatorios import extrato_detalhado_por_mes, dashboard_mensal
+from transacoes import (
+    inserir_transacao, buscar_transacoes_por_usuario,
+    buscar_transacoes_por_mes, deletar_transacao,
+    atualizar_descricao_transacao,
+)
+from relatorios import (
+    relatorio_extrato_detalhado, imprimir_extrato,
+    relatorio_dashboard, imprimir_dashboard,
+)
 
-ANO = 2025
-MES = 5  # maio
+# ─────────────────────────────────────────────────────────────
+#  Helpers de exibição
+# ─────────────────────────────────────────────────────────────
 
-
-# ─── Utilitários de exibição ──────────────────────────────────────────────
-def titulo(texto: str):
-    print("\n" + "═" * 60)
-    print(f"  {texto}")
-    print("═" * 60)
-
-
-def moeda(valor: float) -> str:
-    return f"R$ {valor:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
-
-
-def fmt_data(data) -> str:
-    return data.strftime("%d/%m/%Y") if isinstance(data, datetime) else str(data)
+SEP = "─" * 60
 
 
-# ─── MAIN ─────────────────────────────────────────────────────────────────
-def main():
-    conectar()
+def secao(titulo: str):
+    print(f"\n{'═'*60}")
+    print(f"  🔷  {titulo}")
+    print(f"{'═'*60}")
 
-    # ─────────────────────────────────────────────────────────────────────
-    titulo("ETAPA 1 — Inserindo Categorias")
-    # ─────────────────────────────────────────────────────────────────────
 
-    cats_existentes = listar_categorias()
-    categorias = {}
+def pausa():
+    input("\n  [ Pressione ENTER para continuar... ]\n")
 
-    if not cats_existentes:
-        dados_cats = [
-            ("Alimentação", "🍔", "saida"),
-            ("Transporte",  "🚗", "saida"),
-            ("Lazer",       "🎮", "saida"),
-            ("Saúde",       "💊", "saida"),
-            ("Moradia",     "🏠", "saida"),
-            ("Salário",     "💵", "entrada"),
-            ("Freelance",   "💻", "entrada"),
-        ]
-        for nome, icone, tipo in dados_cats:
-            inserir_categoria(nome, icone, tipo)
-        print(f"✅ {len(dados_cats)} categorias criadas.")
-    else:
-        print(f"ℹ️  {len(cats_existentes)} categorias já existem. Pulando inserção.")
 
-    for c in listar_categorias():
-        categorias[c["nome"]] = c
+# ─────────────────────────────────────────────────────────────
+#  MENU PRINCIPAL
+# ─────────────────────────────────────────────────────────────
 
-    # ─────────────────────────────────────────────────────────────────────
-    titulo("ETAPA 2 — Inserindo Usuário")
-    # ─────────────────────────────────────────────────────────────────────
+def menu_principal():
+    opcoes = {
+        "1": ("👤 CRUD de Usuários",       menu_usuarios),
+        "2": ("🏦 CRUD de Contas",          menu_contas),
+        "3": ("💳 CRUD de Transações",      menu_transacoes),
+        "4": ("📄 Relatório: Extrato ($lookup + $unwind)", menu_extrato),
+        "5": ("📊 Relatório: Dashboard ($facet)",          menu_dashboard),
+        "6": ("🚀 Demonstração Completa (automática)",     demo_automatica),
+        "0": ("❌ Sair",                    None),
+    }
 
-    usuario = buscar_usuario_por_email("maria@email.com")
+    while True:
+        print("\n" + "═"*60)
+        print("  💰  SISTEMA FINANCEIRO PESSOAL — MongoDB + Python")
+        print("═"*60)
+        for k, (label, _) in opcoes.items():
+            print(f"  [{k}] {label}")
+        print(SEP)
+        escolha = input("  Escolha: ").strip()
 
-    if not usuario:
-        inserir_usuario(
-            nome="Maria Silva",
-            email="maria@email.com",
-            saldo_total=0,
-            metas=[
-                {"categoria": "Alimentação", "valor_limite": 800},
-                {"categoria": "Lazer",       "valor_limite": 300},
-            ],
-        )
-        usuario = buscar_usuario_por_email("maria@email.com")
-        print(f"✅ Usuário criado: {usuario['nome']}")
-    else:
-        print(f"ℹ️  Usuário já existe: {usuario['nome']}")
+        if escolha == "0":
+            fechar_conexao()
+            print("  👋 Até logo!")
+            sys.exit(0)
+        elif escolha in opcoes:
+            _, fn = opcoes[escolha]
+            fn()
+        else:
+            print("  ⚠️  Opção inválida.")
 
-    usuario_id = str(usuario["_id"])
 
-    # ─────────────────────────────────────────────────────────────────────
-    titulo("ETAPA 3 — $push e $pull (metas do usuário)")
-    # ─────────────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────
+#  SUB-MENUS
+# ─────────────────────────────────────────────────────────────
 
-    print("Adicionando meta de Transporte com $push...")
-    adicionar_meta(usuario_id, {"categoria": "Transporte", "valor_limite": 400})
+def _selecionar_usuario() -> ObjectId | None:
+    usuarios = buscar_todos_usuarios()
+    if not usuarios:
+        print("  ⚠️  Nenhum usuário cadastrado.")
+        return None
+    print("\n  Usuários disponíveis:")
+    for u in usuarios:
+        print(f"    [{u['_id']}]  {u['nome']}  — Saldo: R${u['saldo_total']:.2f}")
+    uid_str = input("  ID do usuário: ").strip()
+    try:
+        return ObjectId(uid_str)
+    except Exception:
+        print("  ⚠️  ID inválido.")
+        return None
 
-    print("Removendo meta de Lazer com $pull...")
-    remover_meta(usuario_id, "Lazer")
 
-    # ─────────────────────────────────────────────────────────────────────
-    titulo("ETAPA 4 — Inserindo Contas Bancárias")
-    # ─────────────────────────────────────────────────────────────────────
-
+def _selecionar_conta(usuario_id: ObjectId) -> ObjectId | None:
     contas = buscar_contas_por_usuario(usuario_id)
-
     if not contas:
-        conta_corrente_id = str(inserir_conta(
-            usuario_id, "Conta Corrente Nubank", "corrente", saldo=0
-        ))
-        poupanca_id = str(inserir_conta(
-            usuario_id, "Poupança Caixa", "poupanca", saldo=0
-        ))
-        print("✅ 2 contas criadas.")
-    else:
-        conta_corrente_id = str(contas[0]["_id"])
-        poupanca_id = str(contas[1]["_id"]) if len(contas) > 1 else conta_corrente_id
-        print(f"ℹ️  {len(contas)} contas já existem.")
+        print("  ⚠️  Nenhuma conta cadastrada para este usuário.")
+        return None
+    print("\n  Contas disponíveis:")
+    for c in contas:
+        print(f"    [{c['_id']}]  {c['nome']} ({c['tipo']})  — Saldo: R${c['saldo']:.2f}")
+    cid_str = input("  ID da conta: ").strip()
+    try:
+        return ObjectId(cid_str)
+    except Exception:
+        print("  ⚠️  ID inválido.")
+        return None
 
-    # ─────────────────────────────────────────────────────────────────────
-    titulo("ETAPA 5 — Inserindo Transações (com $inc automático no saldo)")
-    # ─────────────────────────────────────────────────────────────────────
 
-    txs = buscar_transacoes_por_mes(usuario_id, ANO, MES)
+# ── USUÁRIOS ──────────────────────────────────────────────────
 
-    if not txs:
-        transacoes_para_inserir = [
-            (conta_corrente_id, 4500.00,  "entrada", "Salário maio",        datetime(ANO, MES, 5),  "Salário"),
-            (conta_corrente_id, 150.90,   "saida",   "Supermercado Extra",   datetime(ANO, MES, 8),  "Alimentação"),
-            (conta_corrente_id, 89.90,    "saida",   "Uber - semana 1",      datetime(ANO, MES, 10), "Transporte"),
-            (poupanca_id,       1200.00,  "entrada", "Freelance app mobile", datetime(ANO, MES, 12), "Freelance"),
-            (conta_corrente_id, 1500.00,  "saida",   "Aluguel maio",         datetime(ANO, MES, 15), "Moradia"),
-            (conta_corrente_id, 320.00,   "saida",   "Consulta + exames",    datetime(ANO, MES, 18), "Saúde"),
-            (conta_corrente_id, 85.00,    "saida",   "Cinema + jantar",      datetime(ANO, MES, 22), "Lazer"),
-        ]
-        for conta_id, valor, tipo, descricao, data, cat_nome in transacoes_para_inserir:
-            cat = categorias.get(cat_nome, {"nome": cat_nome, "icone": "💰"})
-            inserir_transacao(usuario_id, conta_id, valor, tipo, descricao, cat, data)
-        print(f"✅ {len(transacoes_para_inserir)} transações inseridas.")
-    else:
-        print(f"ℹ️  {len(txs)} transações já existem.")
+def menu_usuarios():
+    while True:
+        secao("CRUD DE USUÁRIOS")
+        print("  [1] Inserir usuário")
+        print("  [2] Listar todos os usuários")
+        print("  [3] Ver metas mensais")
+        print("  [4] Adicionar meta mensal  ($push)")
+        print("  [5] Remover meta mensal    ($pull)")
+        print("  [6] Atualizar email")
+        print("  [7] Deletar usuário")
+        print("  [0] Voltar")
+        op = input("  Escolha: ").strip()
 
-    # ─────────────────────────────────────────────────────────────────────
-    titulo("ETAPA 6 — Deletando uma Transação (reverte $inc no saldo)")
-    # ─────────────────────────────────────────────────────────────────────
+        if op == "0":
+            break
+        elif op == "1":
+            nome  = input("  Nome: ")
+            email = input("  Email: ")
+            saldo = float(input("  Saldo inicial (R$): ") or "0")
+            inserir_usuario(nome, email, saldo)
 
-    txs_mes = buscar_transacoes_por_mes(usuario_id, ANO, MES)
-    tx_para_deletar = next((t for t in txs_mes if t["descricao"] == "Cinema + jantar"), None)
+        elif op == "2":
+            usuarios = buscar_todos_usuarios()
+            print(f"\n  Total: {len(usuarios)} usuário(s)")
+            for u in usuarios:
+                print(f"    • {u['nome']} | {u['email']} | Saldo R${u['saldo_total']:.2f}")
+                if u.get("metas_mensais"):
+                    for m in u["metas_mensais"]:
+                        print(f"        ↳ Meta {m['categoria']}: R${m['valor_limite']:.2f} {m['mes']:02d}/{m['ano']}")
 
-    if tx_para_deletar:
-        print(f'Deletando: "{tx_para_deletar["descricao"]}" ({moeda(tx_para_deletar["valor"])})')
-        deletar_transacao(str(tx_para_deletar["_id"]))
-        print("✅ Transação deletada e saldo revertido.")
-    else:
-        print("ℹ️  Transação de teste já foi deletada anteriormente.")
+        elif op == "3":
+            uid = _selecionar_usuario()
+            if uid:
+                u = buscar_usuario_por_id(uid)
+                print(f"\n  Metas de {u['nome']}:")
+                for m in u.get("metas_mensais", []):
+                    print(f"    • {m['categoria']}: R${m['valor_limite']:.2f}  {m['mes']:02d}/{m['ano']}")
 
-    # ─────────────────────────────────────────────────────────────────────
-    titulo("RELATÓRIO 1 — Extrato Detalhado ($lookup + $unwind)")
-    # ─────────────────────────────────────────────────────────────────────
+        elif op == "4":
+            uid = _selecionar_usuario()
+            if uid:
+                cat   = input("  Categoria: ")
+                valor = float(input("  Valor limite (R$): "))
+                mes   = int(input("  Mês (1-12): "))
+                ano   = int(input("  Ano: "))
+                adicionar_meta_mensal(uid, cat, valor, mes, ano)
 
-    extrato = extrato_detalhado_por_mes(usuario_id, ANO, MES)
+        elif op == "5":
+            uid = _selecionar_usuario()
+            if uid:
+                cat = input("  Categoria da meta a remover: ")
+                mes = int(input("  Mês: "))
+                ano = int(input("  Ano: "))
+                remover_meta_mensal(uid, cat, mes, ano)
 
-    if not extrato:
-        print("Nenhuma transação encontrada para este período.")
-    else:
-        print(f"\n📋 Extrato de {str(MES).zfill(2)}/{ANO}\n")
-        print(
-            f"{'Data':<12}{'Descrição':<28}{'Categoria':<16}"
-            f"{'Conta':<24}{'Tipo':<10}{'Valor'}"
-        )
-        print("─" * 100)
-        for tx in extrato:
-            cat = tx.get("categoria", {})
-            icone = cat.get("icone", "")
-            nome_cat = cat.get("nome", "")
-            sinal = "+" if tx["tipo"] == "entrada" else "-"
-            print(
-                f"{fmt_data(tx['data']):<12}"
-                f"{tx['descricao'][:26]:<28}"
-                f"{(icone + ' ' + nome_cat)[:14]:<16}"
-                f"{str(tx.get('conta_nome', '—'))[:22]:<24}"
-                f"{tx['tipo']:<10}"
-                f"{sinal}{moeda(tx['valor'])}"
-            )
+        elif op == "6":
+            uid = _selecionar_usuario()
+            if uid:
+                novo = input("  Novo email: ")
+                atualizar_email_usuario(uid, novo)
 
-    # ─────────────────────────────────────────────────────────────────────
-    titulo("RELATÓRIO 2 — Dashboard Financeiro ($facet)")
-    # ─────────────────────────────────────────────────────────────────────
+        elif op == "7":
+            uid = _selecionar_usuario()
+            if uid:
+                conf = input("  Confirma exclusão? (s/N): ")
+                if conf.lower() == "s":
+                    deletar_usuario(uid)
 
-    dash = dashboard_mensal(usuario_id, ANO, MES)
 
-    total_gasto    = dash.get("total_gasto",    [{}])[0].get("total", 0)
-    total_recebido = dash.get("total_recebido", [{}])[0].get("total", 0)
-    saldo_mes      = total_recebido - total_gasto
-    maior_tx       = dash.get("maior_transacao", [None])[0]
+# ── CONTAS ────────────────────────────────────────────────────
 
-    print(f"\n📊 Dashboard — {str(MES).zfill(2)}/{ANO}")
-    print(f"\n  💚 Total recebido : {moeda(total_recebido)}")
-    print(f"  🔴 Total gasto    : {moeda(total_gasto)}")
-    print(f"  📈 Saldo do mês   : {moeda(saldo_mes)}")
+def menu_contas():
+    while True:
+        secao("CRUD DE CONTAS")
+        print("  [1] Inserir conta")
+        print("  [2] Listar contas de um usuário")
+        print("  [3] Ajustar saldo manualmente  ($inc)")
+        print("  [4] Deletar conta")
+        print("  [0] Voltar")
+        op = input("  Escolha: ").strip()
 
-    if maior_tx:
-        print(f'\n  🏆 Maior transação: "{maior_tx["descricao"]}" — {moeda(maior_tx["valor"])}')
+        if op == "0":
+            break
+        elif op == "1":
+            uid = _selecionar_usuario()
+            if uid:
+                nome  = input("  Nome da conta: ")
+                tipo  = input("  Tipo (corrente/poupança/cartão): ")
+                saldo = float(input("  Saldo inicial (R$): ") or "0")
+                inserir_conta(uid, nome, tipo, saldo)
 
-    cats_rank = dash.get("gasto_por_categoria", [])
-    if cats_rank:
-        print("\n  📂 Ranking de gastos por categoria:")
-        for i, cat in enumerate(cats_rank, 1):
-            barras = int((cat["total"] / total_gasto) * 20) if total_gasto else 0
-            barra = "█" * barras
-            print(
-                f"    {i}. {cat['icone']} {cat['categoria']:<14} "
-                f"{barra:<20} {moeda(cat['total'])} ({cat['quantidade']}x)"
-            )
+        elif op == "2":
+            uid = _selecionar_usuario()
+            if uid:
+                contas = buscar_contas_por_usuario(uid)
+                for c in contas:
+                    print(f"    • {c['nome']} ({c['tipo']})  R${c['saldo']:.2f}  id={c['_id']}")
 
-    print("\n  📦 Quantidade de transações:")
-    for r in dash.get("resumo_quantidade", []):
-        print(f"     • {r['_id']}: {r['quantidade']} transação(ões)")
+        elif op == "3":
+            uid = _selecionar_usuario()
+            if uid:
+                cid = _selecionar_conta(uid)
+                if cid:
+                    valor = float(input("  Valor (+entrada / -saída): "))
+                    atualizar_saldo_conta(cid, valor)
 
-    # ─────────────────────────────────────────────────────────────────────
-    titulo("FIM DA DEMONSTRAÇÃO")
-    # ─────────────────────────────────────────────────────────────────────
+        elif op == "4":
+            uid = _selecionar_usuario()
+            if uid:
+                cid = _selecionar_conta(uid)
+                if cid:
+                    conf = input("  Confirma exclusão? (s/N): ")
+                    if conf.lower() == "s":
+                        deletar_conta(cid)
 
-    desconectar()
 
+# ── TRANSAÇÕES ────────────────────────────────────────────────
+
+def menu_transacoes():
+    while True:
+        secao("CRUD DE TRANSAÇÕES")
+        print("  [1] Registrar transação")
+        print("  [2] Listar transações de um usuário")
+        print("  [3] Listar transações por mês")
+        print("  [4] Atualizar descrição")
+        print("  [5] Deletar transação")
+        print("  [0] Voltar")
+        op = input("  Escolha: ").strip()
+
+        if op == "0":
+            break
+        elif op == "1":
+            uid = _selecionar_usuario()
+            if uid:
+                cid = _selecionar_conta(uid)
+                if cid:
+                    valor     = float(input("  Valor (R$): "))
+                    tipo      = input("  Tipo (entrada/saída): ").lower()
+                    descricao = input("  Descrição: ")
+                    categoria = input("  Categoria (ex: Alimentação): ")
+                    icone     = input("  Ícone (ex: 🍔) [padrão 💰]: ") or "💰"
+                    inserir_transacao(uid, cid, valor, tipo, descricao, categoria, icone)
+
+        elif op == "2":
+            uid = _selecionar_usuario()
+            if uid:
+                txs = buscar_transacoes_por_usuario(uid)
+                print(f"\n  {len(txs)} transação(ões):")
+                for t in txs:
+                    sinal = "+" if t["tipo"] == "entrada" else "-"
+                    print(f"    {t['categoria']['icone']} {t['data'].strftime('%d/%m/%Y')}  "
+                          f"{t['descricao']:<30} {sinal}R${t['valor']:.2f}")
+
+        elif op == "3":
+            uid = _selecionar_usuario()
+            if uid:
+                mes = int(input("  Mês (1-12): "))
+                ano = int(input("  Ano: "))
+                txs = buscar_transacoes_por_mes(uid, mes, ano)
+                print(f"\n  {len(txs)} transação(ões) em {mes:02d}/{ano}:")
+                for t in txs:
+                    sinal = "+" if t["tipo"] == "entrada" else "-"
+                    print(f"    {t['categoria']['icone']} {t['data'].strftime('%d/%m/%Y')}  "
+                          f"{t['descricao']:<30} {sinal}R${t['valor']:.2f}")
+
+        elif op == "4":
+            uid = _selecionar_usuario()
+            if uid:
+                txs = buscar_transacoes_por_usuario(uid)
+                for t in txs:
+                    print(f"  [{t['_id']}]  {t['descricao']}")
+                tid_str = input("  ID da transação: ").strip()
+                try:
+                    tid = ObjectId(tid_str)
+                    nova = input("  Nova descrição: ")
+                    atualizar_descricao_transacao(tid, nova)
+                except Exception:
+                    print("  ⚠️  ID inválido.")
+
+        elif op == "5":
+            uid = _selecionar_usuario()
+            if uid:
+                txs = buscar_transacoes_por_usuario(uid)
+                for t in txs:
+                    print(f"  [{t['_id']}]  {t['descricao']}  R${t['valor']:.2f}")
+                tid_str = input("  ID da transação a deletar: ").strip()
+                try:
+                    tid = ObjectId(tid_str)
+                    conf = input("  Confirma exclusão? (s/N): ")
+                    if conf.lower() == "s":
+                        deletar_transacao(tid)
+                except Exception:
+                    print("  ⚠️  ID inválido.")
+
+
+# ── RELATÓRIOS ────────────────────────────────────────────────
+
+def menu_extrato():
+    secao("RELATÓRIO 1 — EXTRATO DETALHADO ($lookup + $unwind)")
+    uid = _selecionar_usuario()
+    if not uid:
+        return
+    filtrar = input("  Filtrar por mês? (s/N): ").lower()
+    mes = ano = None
+    if filtrar == "s":
+        mes = int(input("  Mês (1-12): "))
+        ano = int(input("  Ano: "))
+    registros = relatorio_extrato_detalhado(uid, mes, ano)
+    imprimir_extrato(registros)
+    pausa()
+
+
+def menu_dashboard():
+    secao("RELATÓRIO 2 — DASHBOARD FINANCEIRO ($facet)")
+    uid = _selecionar_usuario()
+    if not uid:
+        return
+    mes = int(input("  Mês (1-12): "))
+    ano = int(input("  Ano: "))
+    dados = relatorio_dashboard(uid, mes, ano)
+    imprimir_dashboard(dados, mes, ano)
+    pausa()
+
+
+# ─────────────────────────────────────────────────────────────
+#  DEMONSTRAÇÃO AUTOMÁTICA (sem interação do usuário)
+# ─────────────────────────────────────────────────────────────
+
+def demo_automatica():
+    db = conectar.__module__  # só para confirmar que estamos conectados
+    secao("DEMONSTRAÇÃO AUTOMÁTICA — SISTEMA COMPLETO")
+
+    print("\n📦 1. Inserindo categorias padrão...")
+    inserir_categorias_padrao()
+
+    print(f"\n👤 2. Criando usuário...")
+    uid = inserir_usuario("Maria Demo", "maria@demo.com", 0)
+
+    print(f"\n🏦 3. Criando contas bancárias...")
+    cid_corrente = inserir_conta(uid, "Nubank Corrente", "corrente", 0)
+    cid_poupanca = inserir_conta(uid, "Caixa Poupança",  "poupança",  0)
+
+    print(f"\n💳 4. Registrando transações (usam $inc internamente)...")
+    inserir_transacao(uid, cid_corrente, 6000.00, "entrada", "Salário",                "Salário",     "💼", datetime(2025, 5, 1))
+    t1 = inserir_transacao(uid, cid_corrente,  450.00, "saída",  "Supermercado",          "Alimentação", "🍔", datetime(2025, 5, 5))
+    inserir_transacao(uid, cid_corrente,  180.00, "saída",  "Uber / 99",             "Transporte",  "🚗", datetime(2025, 5, 8))
+    inserir_transacao(uid, cid_corrente, 1100.00, "saída",  "Aluguel",               "Moradia",     "🏠", datetime(2025, 5, 10))
+    inserir_transacao(uid, cid_corrente,   90.00, "saída",  "Streaming + internet",  "Lazer",       "🎉", datetime(2025, 5, 12))
+    inserir_transacao(uid, cid_poupanca,  500.00, "entrada", "Rendimento poupança",  "Investimentos","📈", datetime(2025, 5, 15))
+    inserir_transacao(uid, cid_corrente,  220.00, "saída",  "Consulta médica",       "Saúde",       "💊", datetime(2025, 5, 18))
+
+    print(f"\n📌 5. Adicionando metas mensais via $push...")
+    adicionar_meta_mensal(uid, "Alimentação", 400.00, 5, 2025)
+    adicionar_meta_mensal(uid, "Lazer",       100.00, 5, 2025)
+    adicionar_meta_mensal(uid, "Transporte",  200.00, 5, 2025)
+
+    u = buscar_usuario_por_id(uid)
+    print(f"\n  Metas cadastradas para {u['nome']}:")
+    for m in u.get("metas_mensais", []):
+        print(f"    • {m['categoria']}: R${m['valor_limite']:.2f}  {m['mes']:02d}/{m['ano']}")
+
+    print(f"\n🗑️  6. Removendo meta de 'Lazer' via $pull...")
+    remover_meta_mensal(uid, "Lazer", 5, 2025)
+    u = buscar_usuario_por_id(uid)
+    print(f"  Metas restantes: {[m['categoria'] for m in u.get('metas_mensais', [])]}")
+
+    print(f"\n✏️  7. Atualizando descrição de uma transação...")
+    atualizar_descricao_transacao(t1, "Supermercado Extra (atualizado)")
+
+    print(f"\n🗑️  8. Deletando a transação de R$450 (Supermercado)...")
+    deletar_transacao(t1)
+
+    print(f"\n📄 9. RELATÓRIO 1 — Extrato detalhado ($lookup + $unwind):")
+    registros = relatorio_extrato_detalhado(uid, mes=5, ano=2025)
+    imprimir_extrato(registros)
+
+    print(f"\n📊 10. RELATÓRIO 2 — Dashboard ($facet):")
+    dados = relatorio_dashboard(uid, mes=5, ano=2025)
+    imprimir_dashboard(dados, mes=5, ano=2025)
+
+    print(f"\n✅ Demonstração concluída!")
+    print(f"   Usuário demo criado com id={uid}")
+    pausa()
+
+
+# ─────────────────────────────────────────────────────────────
+#  ENTRY POINT
+# ─────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
-    main()
+    conectar()
+    menu_principal()
